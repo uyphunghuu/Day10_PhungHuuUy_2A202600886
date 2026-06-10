@@ -23,6 +23,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
+
 from dotenv import load_dotenv
 
 from monitoring.freshness_check import check_manifest_freshness

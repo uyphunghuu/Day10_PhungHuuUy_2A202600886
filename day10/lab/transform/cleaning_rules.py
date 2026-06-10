@@ -1,8 +1,10 @@
 """
 Cleaning rules — raw export → cleaned rows + quarantine.
 
-Baseline gồm các failure mode mở rộng (allowlist doc_id, parse ngày, HR stale version).
-Sinh viên thêm ≥3 rule mới: mỗi rule phải ghi `metric_impact` (xem README — chống trivial).
+SINH VIÊN SỬA — Baseline mở rộng:
+- Thêm access_control_sop vào ALLOWED_DOC_IDS (thiếu → gq_d10_10 fail).
+- Thay HR stale date-based → content-based (bắt "10 ngày phép năm", "bản HR 2025").
+- Thêm ≥3 rule mới: "Nội dung không rõ ràng:", whitespace-only, noisy "!!!" prefix.
 """
 
 from __future__ import annotations
@@ -13,13 +15,14 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-# Khớp export hợp lệ trong lab (mở rộng khi nhóm thêm doc mới — phải đồng bộ contract).
+# [SV SỬA] Thêm access_control_sop — thiếu source này làm gq_d10_10 fail vì bị quarantine nhầm.
 ALLOWED_DOC_IDS = frozenset(
     {
         "policy_refund_v4",
         "sla_p1_2026",
         "it_helpdesk_faq",
         "hr_leave_policy",
+        "access_control_sop",
     }
 )
 
@@ -70,16 +73,23 @@ def clean_rows(
     """
     Trả về (cleaned, quarantine).
 
-    Baseline (mở rộng theo narrative Day 10):
-    1) Quarantine: doc_id không thuộc allowlist (export lạ / catalog sai).
-    2) Chuẩn hoá effective_date sang YYYY-MM-DD; quarantine nếu không parse được.
-    3) Quarantine: chunk hr_leave_policy có effective_date < 2026-01-01 (bản HR cũ / conflict version).
-    4) Quarantine: chunk_text rỗng hoặc effective_date rỗng sau chuẩn hoá.
-    5) Loại trùng nội dung chunk_text (giữ bản đầu).
-    6) Fix stale refund: policy_refund_v4 chứa '14 ngày làm việc' → 7 ngày.
+    Baseline:
+    1) Quarantine: doc_id không thuộc allowlist.
+    2) Chuẩn hoá effective_date; quarantine nếu không parse được.
+    3) [SV SỬA] HR stale: dùng content-based thay vì date-based.
+    4) Quarantine: chunk_text rỗng hoặc effective_date rỗng.
+    5) Loại trùng chunk_text (giữ bản đầu).
+    6) Fix stale refund: 14→7 ngày.
+
+    [SV THÊM] Rule mới:
+    7) Quarantine chunk_text chỉ chứa whitespace (tránh expectation fail).
+    8) Quarantine chunk_text chứa "Nội dung không rõ ràng:" (corrupted export).
+    9) Clean noisy "!!!" prefix khỏi chunk_text.
+    10) Normalize exported_at format (2026/04/11 → 2026-04-11).
     """
     quarantine: List[Dict[str, Any]] = []
     seen_text: set[str] = set()
+    seen_keys: set[str] = set()  # (doc_id, norm_text) để tránh trùng có chủ đích
     cleaned: List[Dict[str, Any]] = []
     seq = 0
 
@@ -89,10 +99,12 @@ def clean_rows(
         eff_raw = raw.get("effective_date", "")
         exported_at = raw.get("exported_at", "")
 
+        # ── Rule 1: unknown doc_id ──
         if doc_id not in ALLOWED_DOC_IDS:
             quarantine.append({**raw, "reason": "unknown_doc_id"})
             continue
 
+        # ── Rule 2: normalize effective_date ──
         eff_norm, eff_err = _normalize_effective_date(eff_raw)
         if eff_err == "empty_effective_date":
             quarantine.append({**raw, "reason": "missing_effective_date"})
@@ -101,27 +113,52 @@ def clean_rows(
             quarantine.append({**raw, "reason": eff_err, "effective_date_raw": eff_raw})
             continue
 
-        if doc_id == "hr_leave_policy" and eff_norm < "2026-01-01":
-            quarantine.append(
-                {
-                    **raw,
-                    "reason": "stale_hr_policy_effective_date",
-                    "effective_date_normalized": eff_norm,
-                }
-            )
+        # ── [SV SỬA] Rule 3: HR stale — content-based ──
+        # Thay vì quarantine theo effective_date < 2026-01-01,
+        # dùng nội dung để phát hiện bản HR 2025 (10 ngày) vs 2026 (12 ngày).
+        # Tránh quarantine nhầm dòng 2026 content có date cũ (VD: dòng 65).
+        if doc_id == "hr_leave_policy":
+            text_lower = (text or "").lower()
+            if "10 ngày phép năm" in text_lower or "bản hr 2025" in text_lower:
+                quarantine.append(
+                    {
+                        **raw,
+                        "reason": "stale_hr_content_10d_annual",
+                        "effective_date_normalized": eff_norm,
+                    }
+                )
+                continue
+
+        # ── [SV THÊM] Rule 7: whitespace-only chunk ──
+        if not (text or "").strip():
+            quarantine.append({**raw, "reason": "whitespace_only_chunk"})
             continue
 
-        if not text:
-            quarantine.append({**raw, "reason": "missing_chunk_text"})
+        # ── [SV THÊM] Rule 8: "Nội dung không rõ ràng:" ──
+        if "Nội dung không rõ ràng:" in text:
+            quarantine.append({**raw, "reason": "ambiguous_content_prefix"})
             continue
 
+        # ── Rule 4 (gián tiếp): chunk_text rỗng ──
+        # (đã bắt bởi whitespace-only rule ở trên)
+
+        # ── Rule 5: dedup chính xác ──
         key = _norm_text(text)
         if key in seen_text:
             quarantine.append({**raw, "reason": "duplicate_chunk_text"})
             continue
         seen_text.add(key)
 
+        # ── [SV THÊM] Rule 9: clean noisy "!!!" prefix ──
         fixed_text = text
+        if fixed_text.startswith("!!!"):
+            fixed_text = fixed_text.replace("!!!", "").strip()
+            if not fixed_text:
+                quarantine.append({**raw, "reason": "noise_only_after_strip"})
+                continue
+            fixed_text += " [cleaned: noise_prefix_removed]"
+
+        # ── Rule 6: fix stale refund ──
         if apply_refund_window_fix and doc_id == "policy_refund_v4":
             if "14 ngày làm việc" in fixed_text:
                 fixed_text = fixed_text.replace(
@@ -129,6 +166,10 @@ def clean_rows(
                     "7 ngày làm việc",
                 )
                 fixed_text += " [cleaned: stale_refund_window]"
+
+        # ── [SV THÊM] Rule 10: normalize exported_at ──
+        # Định dạng "2026/04/11T00:00:00" → "2026-04-11T00:00:00"
+        exported_at = re.sub(r"^(\d{4})/(\d{2})/(\d{2})", r"\1-\2-\3", exported_at.strip())
 
         seq += 1
         cleaned.append(

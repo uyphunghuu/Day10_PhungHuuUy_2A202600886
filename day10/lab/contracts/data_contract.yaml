@@ -1,9 +1,9 @@
 # Data contract — Lab Day 10 (tiếp nối artifact CS + IT Helpdesk)
-# Sinh viên bổ sung owner, SLA freshness, và nguồn canonical.
+# [SV SỬA] Thêm access_control_sop vào allowed_doc_ids + canonical_sources.
 
 version: "1.0"
 dataset: "kb_chunk_export"
-owner_team: "__TODO__"
+owner_team: "CS-IT-Helpdesk-Team"
 
 schema_cleaned:
   chunk_id:
@@ -36,7 +36,7 @@ quality_rules:
 freshness:
   measured_at: "publish"  # ingest | cleaned | publish
   sla_hours: 24
-  alert_channel: "__TODO__"
+  alert_channel: "#data-pipeline-slack"
 
 canonical_sources:
   - path: "data/docs/policy_refund_v4.txt"
@@ -47,14 +47,19 @@ canonical_sources:
     doc_id: "it_helpdesk_faq"
   - path: "data/docs/hr_leave_policy.txt"
     doc_id: "hr_leave_policy"
+  - path: "data/docs/access_control_sop.txt"
+    doc_id: "access_control_sop"
 
-# Baseline allowlist export — nhóm mở rộng doc mới phải đồng bộ cleaning_rules + contract.
+# [SV SỬA] Thêm access_control_sop — đồng bộ với cleaning_rules.py.
 allowed_doc_ids:
   - policy_refund_v4
   - sla_p1_2026
   - it_helpdesk_faq
   - hr_leave_policy
+  - access_control_sop
 
-# Merit/Distinction: có thể đưa cutoff versioning vào env và tham chiếu ở đây (tránh hard-code trong code).
+# Merit/Distinction: content-based versioning thay vì hard-code date.
 policy_versioning:
-  hr_leave_min_effective_date: "2026-01-01"
+  hr_leave_method: "content_based"
+  hr_2025_marker: "10 ngày phép năm"
+  hr_2026_marker: "12 ngày phép năm"

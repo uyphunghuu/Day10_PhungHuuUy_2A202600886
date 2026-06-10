@@ -1,7 +1,10 @@
 """
-Expectation suite đơn giản (không bắt buộc Great Expectations).
+Expectation suite — baseline + [SV THÊM] E7, E8, E9.
 
-Sinh viên có thể thay bằng GE / pydantic / custom — miễn là có halt có kiểm soát.
+[SV THÊM]
+  E7 — exported_at format ISO (halt): phát hiện ngày export sai format lọt qua clean.
+  E8 — no_ambiguous_prefix (halt): "Nội dung không rõ ràng:" không còn trong cleaned.
+  E9 — doc_coverage (warn): đảm bảo mỗi source có ≥1 dòng cleaned (phát hiện mất source).
 """
 
 from __future__ import annotations
@@ -109,6 +112,68 @@ def run_expectations(cleaned_rows: List[Dict[str, Any]]) -> Tuple[List[Expectati
             ok6,
             "halt",
             f"violations={len(bad_hr_annual)}",
+        )
+    )
+
+    # ═══════════════════════════════════════════════════════════
+    # [SV THÊM] E7: exported_at format ISO (halt)
+    # ───────────────────────────────────────────────────────────
+    # Phát hiện exported_at còn định dạng "2026/04/11" thay vì "2026-04-11".
+    bad_exported = [
+        r
+        for r in cleaned_rows
+        if not re.match(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
+            (r.get("exported_at") or "").strip(),
+        )
+    ]
+    ok7 = len(bad_exported) == 0
+    results.append(
+        ExpectationResult(
+            "exported_at_iso_format",
+            ok7,
+            "halt",
+            f"bad_format_rows={len(bad_exported)}",
+        )
+    )
+
+    # [SV THÊM] E8: no ambiguous prefix in cleaned
+    # ───────────────────────────────────────────────────────────
+    # "Nội dung không rõ ràng:" là corrupted export — không được lọt vào cleaned.
+    bad_ambig = [
+        r
+        for r in cleaned_rows
+        if "Nội dung không rõ ràng:" in (r.get("chunk_text") or "")
+    ]
+    ok8 = len(bad_ambig) == 0
+    results.append(
+        ExpectationResult(
+            "no_ambiguous_content_prefix",
+            ok8,
+            "halt",
+            f"ambiguous_rows={len(bad_ambig)}",
+        )
+    )
+
+    # [SV THÊM] E9: doc_coverage (warn)
+    # ───────────────────────────────────────────────────────────
+    # Mỗi source trong ALLOWED_DOC_IDS phải có ≥1 dòng cleaned.
+    expected_docs = {
+        "policy_refund_v4",
+        "sla_p1_2026",
+        "it_helpdesk_faq",
+        "hr_leave_policy",
+        "access_control_sop",
+    }
+    present_docs = {r.get("doc_id") for r in cleaned_rows}
+    missing = expected_docs - present_docs
+    ok9 = len(missing) == 0
+    results.append(
+        ExpectationResult(
+            "doc_coverage_all_sources",
+            ok9,
+            "warn",
+            f"missing_docs={sorted(missing)}",
         )
     )
 
